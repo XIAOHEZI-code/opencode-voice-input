@@ -295,7 +295,7 @@ export const server: Plugin = async ({ client }) => {
 					// Only update toast if level changed significantly or enough time passed
 					const now = Date.now()
 					const levelPct = Math.round(level * 100)
-					if (now - lastVolumeToastTime < 300 && Math.abs(levelPct - lastVolumeLevel) < 5) break
+					if (now - lastVolumeToastTime < 150 && Math.abs(levelPct - lastVolumeLevel) < 5) break
 					lastVolumeToastTime = now
 					lastVolumeLevel = levelPct
 
