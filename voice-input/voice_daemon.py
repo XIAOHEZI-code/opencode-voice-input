@@ -593,7 +593,6 @@ def cmd_stream() -> None:
         def __init__(self):
             super().__init__()
             self._speaking = False
-            self._last_partial_text = ""
 
         def on_open(self):
             emit_json_line({"event": "status", "state": "recording"})
@@ -618,15 +617,11 @@ def cmd_stream() -> None:
                         emit_json_line({"event": "status", "state": "speaking"})
 
                 if RecognitionResult.is_sentence_end(sentence):
-                    # Final sentence: emit full text, reset partial tracker
-                    self._last_partial_text = ""
+                    # Final sentence: emit full text
                     emit_json_line({"event": "transcription", "text": text})
                 else:
-                    # Partial: emit only NEW characters since last partial (delta)
-                    delta = text[len(self._last_partial_text):]
-                    self._last_partial_text = text
-                    if delta:
-                        emit_json_line({"event": "delta", "text": delta})
+                    # Partial: emit full text so far (plugin silently ignores)
+                    emit_json_line({"event": "partial", "text": text})
 
         def on_error(self, result):
             msg = str(result) if result else "unknown error"

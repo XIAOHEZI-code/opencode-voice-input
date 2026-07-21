@@ -171,7 +171,6 @@ export const server: Plugin = async ({ client }) => {
 	// ── Phase 2: UI state tracking ──────────────────────────────────────────────
 	let completedTimer: ReturnType<typeof setTimeout> | null = null
 	let hadTranscription = false
-	let hadDelta = false
 	let lastVolumeToastTime = 0
 	let lastVolumeLevel = -1    // Track last displayed level to avoid flicker
 
@@ -242,7 +241,6 @@ export const server: Plugin = async ({ client }) => {
 					if (state === "recording" || state === "speaking") {
 						cancelCompletedTimer()
 						hadTranscription = false
-						hadDelta = false
 						lastVolumeToastTime = 0
 						lastVolumeLevel = -1
 					}
@@ -307,13 +305,8 @@ export const server: Plugin = async ({ client }) => {
 					break
 				}
 
-				case "delta": {
-					const delta = String(event.text ?? "").trim()
-					if (!delta) break
-					hadDelta = true
-					client.tui.appendPrompt({
-						body: { text: delta },
-					}).catch(() => {})
+				case "partial": {
+					// Partial ASR text — informational only, don't write to prompt
 					break
 				}
 
@@ -322,27 +315,19 @@ export const server: Plugin = async ({ client }) => {
 					hadTranscription = true
 					if (!text) break
 
-					if (hadDelta) {
-						// Delta already built the text — just show completion toast
-						client.tui.showToast({
-							body: { message: `✅ 识别完成: ${text.slice(0, 50)}${text.length > 50 ? "..." : ""}`, variant: "info" },
-						}).catch(() => {})
-					} else {
-						// No partials — append full text to prompt
-						client.tui
-							.appendPrompt({ body: { text } })
-							.then(() => {
-								client.tui.showToast({
-									body: { message: `✅ 识别完成: ${text.slice(0, 50)}${text.length > 50 ? "..." : ""}`, variant: "info" },
-								}).catch(() => {})
-							})
-							.catch((err: unknown) => {
-								console.error("[voice-input] appendPrompt failed:", err)
-								client.tui.showToast({
-									body: { message: `⚠️ 文字注入失败: ${String(err)}`, variant: "error" },
-								}).catch(() => {})
-							})
-					}
+					client.tui
+						.appendPrompt({ body: { text } })
+						.then(() => {
+							client.tui.showToast({
+								body: { message: `✅ 识别完成: ${text.slice(0, 50)}${text.length > 50 ? "..." : ""}`, variant: "info" },
+							}).catch(() => {})
+						})
+						.catch((err: unknown) => {
+							console.error("[voice-input] appendPrompt failed:", err)
+							client.tui.showToast({
+								body: { message: `⚠️ 文字注入失败: ${String(err)}`, variant: "error" },
+							}).catch(() => {})
+						})
 					break
 				}
 
