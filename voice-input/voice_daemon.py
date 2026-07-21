@@ -54,7 +54,7 @@ MIN_PCM_BYTES = 1600      # ≈ 0.05 s at 16 kHz mono 16-bit
 MAX_KEPT_RECORDINGS = 3   # Keep last N WAV files for debugging
 
 # Streaming ASR constants
-BLOCK_SIZE = 1600             # 100 ms at 16 kHz mono 16-bit
+BLOCK_SIZE = 2400             # 150 ms at 16 kHz mono 16-bit
 CHANNELS = NUM_CHANNELS       # alias for consistency
 SILENCE_TIMEOUT = 30          # auto-stop after 30 s of silence
 DASHSCOPE_MODEL = "paraformer-realtime-v2"
@@ -661,6 +661,7 @@ def cmd_stream() -> None:
 
     def on_terminate(signum, frame):
         emit_json_line({"event": "status", "state": "transcribing"})
+        time.sleep(0.3)   # Flush remaining buffered audio to ASR before stopping
         stop_event.set()
 
     signal.signal(signal.SIGTERM, on_terminate)
