@@ -42,6 +42,13 @@ except ImportError as e:
     _SOUNDDEVICE_AVAILABLE = False
     _SOUNDDEVICE_IMPORT_ERROR = str(e)
 
+# ── Optional voice filter dependencies ──────────────────────────────────────────
+try:
+    from scipy import signal
+    _SCIPY_AVAILABLE = True
+except ImportError:
+    _SCIPY_AVAILABLE = False
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
@@ -57,7 +64,14 @@ MAX_KEPT_RECORDINGS = 3   # Keep last N WAV files for debugging
 BLOCK_SIZE = 2400             # 150 ms at 16 kHz mono 16-bit
 CHANNELS = NUM_CHANNELS       # alias for consistency
 SILENCE_TIMEOUT = 30          # auto-stop after 30 s of silence
-DASHSCOPE_MODEL = "paraformer-realtime-v2"
+DASHSCOPE_MODEL = "fun-asr-realtime"
+
+# Voice filter constants
+VOICE_BANDPASS_LOW = 80        # Hz — cut sub-bass rumble
+VOICE_BANDPASS_HIGH = 7600     # Hz — cut high-frequency hiss (speech < 8kHz)
+NOISE_GATE_THRESHOLD = 0.01    # RMS threshold — below this = silence
+NOISE_GATE_ATTENUATION = 0.1   # Factor — attenuate silent frames to 10%
+SPEAKING_RMS_THRESHOLD = 0.015 # RMS threshold — above this = voice detected
 
 CACHE_DIR = Path("~/.cache/opencode/voice-input").expanduser()
 STATE_FILE = CACHE_DIR / "state.json"
@@ -77,6 +91,52 @@ def print_json(data: dict) -> None:
 def emit_json_line(data: dict) -> None:
     """Print compact JSON to stdout with flush (for streaming JSONL)."""
     print(emit_json(data), flush=True)
+
+
+# ── Audio Preprocessor ──────────────────────────────────────────────────────────
+
+class AudioPreprocessor:
+    """Real-time voice enhancement for 16kHz mono PCM streams.
+
+    Applies: bandpass filter (80-7600Hz) → RMS noise gate.
+    Designed for per-frame streaming — zero lookahead, minimal latency.
+    """
+
+    def __init__(self, sample_rate: int = 16000):
+        self.sample_rate = sample_rate
+        self._sos = None
+        if _SCIPY_AVAILABLE:
+            # 4th-order Butterworth bandpass: 80–7600 Hz
+            self._sos = signal.butter(
+                4, [VOICE_BANDPASS_LOW, VOICE_BANDPASS_HIGH],
+                btype="band", fs=sample_rate, output="sos",
+            )
+
+    def process_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Apply bandpass filter + RMS noise gate to a single audio frame.
+
+        Args:
+            frame: float32 numpy array in range [-1.0, 1.0]
+
+        Returns:
+            Processed float32 numpy array of same shape.
+        """
+        # 1. Bandpass filter (skip if scipy unavailable)
+        if self._sos is not None:
+            frame = signal.sosfilt(self._sos, frame)
+
+        # 2. RMS noise gate — attenuate silent frames, keep speech frames
+        rms = np.sqrt(np.mean(frame.astype(np.float64) ** 2))
+        if rms < NOISE_GATE_THRESHOLD:
+            frame = frame * NOISE_GATE_ATTENUATION
+
+        return frame
+
+    @staticmethod
+    def is_speaking(frame: np.ndarray) -> bool:
+        """Detect whether an audio frame contains voice energy."""
+        rms = np.sqrt(np.mean(frame.astype(np.float64) ** 2))
+        return rms >= SPEAKING_RMS_THRESHOLD
 
 
 def fail(error: str) -> dict:
@@ -628,12 +688,15 @@ def cmd_stream() -> None:
             emit_json_line({"event": "status", "state": "error", "message": msg})
             stop_event.set()
 
+    preprocessor = AudioPreprocessor(SAMPLE_RATE) if _SOUNDDEVICE_AVAILABLE else None
     cb = StreamCallback()
     recognition = Recognition(
         model=DASHSCOPE_MODEL,
         format="pcm",
         sample_rate=SAMPLE_RATE,
         callback=cb,
+        disfluency_removal_enabled=True,
+        language_hints=["zh"],
     )
 
     def audio_cb(indata, frames, time_info, status):
@@ -642,9 +705,28 @@ def cmd_stream() -> None:
         if status:
             print("[audio] %s" % status, file=sys.stderr, flush=True)
         try:
-            pcm = indata.tobytes()
-            level = calculate_volume(pcm)
+            # Convert int16 → float32 for processing
+            float_data = indata.astype(np.float32) / 32768.0
+
+            # 1. Apply voice enhancement (bandpass + noise gate)
+            if preprocessor is not None:
+                float_data = preprocessor.process_frame(float_data)
+
+            # 2. Volume level (before noise gate for accurate meter)
+            level = calculate_volume(indata.tobytes())
             emit_json_line({"event": "volume", "level": round(level, 3)})
+
+            # 3. Speaking detection (RMS-based, faster than ASR sentence detection)
+            if preprocessor is not None and preprocessor.is_speaking(float_data):
+                with speech_lock:
+                    if not cb._speaking:
+                        cb._speaking = True
+                        emit_json_line({"event": "status", "state": "speaking"})
+
+            # 4. Convert float32 → int16 PCM for ASR
+            pcm = (float_data * 32767.0).astype(np.int16).tobytes()
+
+            # 5. Send to ASR
             recognition.send_audio_frame(pcm)
         except sd.CallbackStop:
             raise
