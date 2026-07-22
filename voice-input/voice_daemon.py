@@ -44,7 +44,7 @@ except ImportError as e:
 
 # ── Optional voice filter dependencies ──────────────────────────────────────────
 try:
-    from scipy import signal
+    from scipy import signal as scipy_signal
     _SCIPY_AVAILABLE = True
 except ImportError:
     _SCIPY_AVAILABLE = False
@@ -107,7 +107,7 @@ class AudioPreprocessor:
         self._sos = None
         if _SCIPY_AVAILABLE:
             # 4th-order Butterworth bandpass: 80–7600 Hz
-            self._sos = signal.butter(
+            self._sos = scipy_signal.butter(
                 4, [VOICE_BANDPASS_LOW, VOICE_BANDPASS_HIGH],
                 btype="band", fs=sample_rate, output="sos",
             )
@@ -123,7 +123,7 @@ class AudioPreprocessor:
         """
         # 1. Bandpass filter (skip if scipy unavailable)
         if self._sos is not None:
-            frame = signal.sosfilt(self._sos, frame)
+            frame = scipy_signal.sosfilt(self._sos, frame)
 
         # 2. RMS noise gate — attenuate silent frames, keep speech frames
         rms = np.sqrt(np.mean(frame.astype(np.float64) ** 2))
